@@ -1,0 +1,8 @@
+{
+  "model": "RandomForest",
+  "test_mae": 0.6899,
+  "test_rmse": 0.8605,
+  "test_r2": -0.0845,
+  "within_5pct": 56.41,
+  "n_test": 39
+}
