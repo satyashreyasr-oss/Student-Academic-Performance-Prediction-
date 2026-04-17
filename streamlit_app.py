@@ -23,7 +23,6 @@ st.set_page_config(
 ARTIFACT_DIR = Path("ml/artifacts")
 DATA_PATH    = Path("DATA/students.csv")
 
-# Column order the pipeline expects
 FEATURES = [
     "Age", "Gender", "Study_Hours_per_Day", "Sleep_Hours",
     "Attendance_%", "Assignments_Completed_%", "Avg_Internal_Score",
@@ -31,18 +30,33 @@ FEATURES = [
 ]
 
 FRIENDLY = {
-    "Age":                    "Age",
-    "Gender":                 "Gender",
-    "Study_Hours_per_Day":    "Study Hours / Day",
-    "Sleep_Hours":            "Sleep Hours",
-    "Attendance_%":           "Attendance (%)",
-    "Assignments_Completed_%":"Assignments Completed (%)",
-    "Avg_Internal_Score":     "Avg Internal Score",
-    "Stress_Level_(1-10)":    "Stress Level (1–10)",
-    "Social_Media_Hours":     "Social Media Hours / Day",
+    "Age":                     "Age",
+    "Gender":                  "Gender",
+    "Study_Hours_per_Day":     "Study Hours / Day",
+    "Sleep_Hours":             "Sleep Hours",
+    "Attendance_%":            "Attendance (%)",
+    "Assignments_Completed_%": "Assignments Completed (%)",
+    "Avg_Internal_Score":      "Avg Internal Score",
+    "Stress_Level_(1-10)":     "Stress Level (1–10)",
+    "Social_Media_Hours":      "Social Media Hours / Day",
 }
 
-GRADE_COLOR = {"A": "🟢", "B": "🔵", "C": "🟡", "D": "🟠", "F": "🔴"}
+GRADE_COLOR  = {"A": "🟢", "B": "🔵", "C": "🟡", "D": "🟠", "F": "🔴"}
+
+# ── Colours matching the React dashboard ─────────────────────────────────────
+C_BLUE      = "#3182ce"   # scatter dots, primary bars
+C_ACCENT    = "#58a6ff"   # feature importance, headings
+C_RED       = "#e53e3e"   # reference / perfect-prediction line
+C_GREEN     = "#3fb950"   # grade match true
+C_ERROR_CLR = "#f85149"   # grade match false
+C_BORDER    = "#30363d"
+
+# Error-bucket colours (same 5-colour scheme as React histogram)
+BUCKET_COLORS = ["#3182ce", "#38a169", "#d69e2e", "#e53e3e", "#805ad5", "#805ad5"]
+
+# Grade comparison colours
+GRADE_ACTUAL    = "#3182ce"   # blue  – actual
+GRADE_PREDICTED = "#58a6ff"   # light blue – predicted
 
 
 # ── Loaders ───────────────────────────────────────────────────────────────────
@@ -50,7 +64,7 @@ GRADE_COLOR = {"A": "🟢", "B": "🔵", "C": "🟡", "D": "🟠", "F": "🔴"}
 def load_artifacts():
     model    = joblib.load(ARTIFACT_DIR / "model.pkl")
     pipeline = joblib.load(ARTIFACT_DIR / "pipeline.pkl")
-    with open(ARTIFACT_DIR / "metrics.json")          as f: metrics = json.load(f)
+    with open(ARTIFACT_DIR / "metrics.json")           as f: metrics = json.load(f)
     with open(ARTIFACT_DIR / "feature_importance.json") as f: fi     = json.load(f)
     return model, pipeline, metrics, fi
 
@@ -78,14 +92,36 @@ def run_predict(model, pipeline, inputs: dict) -> float:
     return round(max(0.0, min(10.0, sgpa)), 2)
 
 
+@st.cache_data(show_spinner="Running predictions on full dataset…")
+def build_comparison_df(_model, _pipeline, df: pd.DataFrame) -> pd.DataFrame:
+    """Predict SGPA for every student in the CSV and compare to actual."""
+    rows = df[FEATURES].copy()
+    transformed  = _pipeline.transform(rows)
+    preds        = _model.predict(transformed)
+    preds        = np.clip(preds, 0.0, 10.0).round(2)
+
+    cdf = pd.DataFrame({
+        "student_id":      df.index,
+        "actual":          df["SGPA"].values,
+        "predicted":       preds,
+    })
+    cdf["error"]          = (cdf["actual"] - cdf["predicted"]).round(2)
+    cdf["abs_error"]      = cdf["error"].abs()
+    cdf["actual_grade"]   = cdf["actual"].apply(grade_band)
+    cdf["predicted_grade"]= cdf["predicted"].apply(grade_band)
+    cdf["grade_match"]    = cdf["actual_grade"] == cdf["predicted_grade"]
+    return cdf
+
+
 # ── Session state ─────────────────────────────────────────────────────────────
 if "history" not in st.session_state:
-    st.session_state.history = []   # list of {student_id, predicted, actual}
+    st.session_state.history = []
 
 
-# ── Load everything ───────────────────────────────────────────────────────────
+# ── Load ──────────────────────────────────────────────────────────────────────
 model, pipeline, metrics, fi = load_artifacts()
-df = load_csv()
+df   = load_csv()
+cdf  = build_comparison_df(model, pipeline, df)
 
 # ── Header ────────────────────────────────────────────────────────────────────
 st.title("🎓 Student Performance Predictor")
@@ -93,7 +129,9 @@ st.caption("Predict SGPA (0–10) from academic & lifestyle features · RandomFo
 st.divider()
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_predict, tab_dashboard, tab_compare = st.tabs(["🔮 Predict", "📊 Dashboard", "📋 Comparison"])
+tab_predict, tab_dashboard, tab_dataset, tab_session = st.tabs([
+    "🔮 Predict", "📊 Dashboard", "📈 Dataset Analysis", "📋 My Predictions"
+])
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -102,13 +140,12 @@ tab_predict, tab_dashboard, tab_compare = st.tabs(["🔮 Predict", "📊 Dashboa
 with tab_predict:
     st.subheader("Enter student details")
 
-    # ── Load from dataset ──────────────────────────────────────────────────
     with st.expander("📂 Auto-fill from dataset (optional)"):
         selected_id = st.selectbox("Select student ID", ["— manual entry —"] + list(df.index))
         auto_actual = None
         if selected_id != "— manual entry —":
-            row_data   = df.loc[selected_id]
-            auto_actual = float(row_data["SGPA"]) if str(row_data.get("SGPA", "")).strip() not in ("", "nan") else None
+            row_data    = df.loc[selected_id]
+            auto_actual = float(row_data["SGPA"]) if str(row_data.get("SGPA","")).strip() not in ("","nan") else None
             st.info(f"Loaded **{selected_id}** · Actual SGPA: **{auto_actual if auto_actual else 'N/A'}**")
         else:
             row_data = None
@@ -119,24 +156,20 @@ with tab_predict:
             return v if not (isinstance(v, float) and np.isnan(v)) else default
         return default
 
-    # ── Input form ────────────────────────────────────────────────────────
     with st.form("predict_form"):
         c1, c2, c3 = st.columns(3)
-
         with c1:
-            age            = st.number_input("Age",              min_value=15, max_value=40,  value=int(_val("Age", 20)))
-            gender         = st.selectbox(  "Gender",            ["Male", "Female"],           index=0 if str(_val("Gender","Male")) == "Male" else 1)
-            study_hours    = st.number_input("Study Hours / Day", min_value=0.0, max_value=16.0, step=0.1, value=float(_val("Study_Hours_per_Day", 4.0)))
-
+            age         = st.number_input("Age",               min_value=15,  max_value=40,   value=int(_val("Age", 20)))
+            gender      = st.selectbox(  "Gender",             ["Male","Female"], index=0 if str(_val("Gender","Male"))=="Male" else 1)
+            study_hours = st.number_input("Study Hours / Day", min_value=0.0, max_value=16.0, step=0.1, value=float(_val("Study_Hours_per_Day", 4.0)))
         with c2:
-            sleep_hours    = st.number_input("Sleep Hours",        min_value=2.0, max_value=12.0, step=0.1, value=float(_val("Sleep_Hours", 7.0)))
-            attendance     = st.number_input("Attendance (%)",     min_value=0.0, max_value=100.0, step=0.1, value=float(_val("Attendance_%", 80.0)))
-            assignments    = st.number_input("Assignments Completed (%)", min_value=0.0, max_value=100.0, step=0.1, value=float(_val("Assignments_Completed_%", 80.0)))
-
+            sleep_hours = st.number_input("Sleep Hours",        min_value=2.0, max_value=12.0, step=0.1, value=float(_val("Sleep_Hours", 7.0)))
+            attendance  = st.number_input("Attendance (%)",     min_value=0.0, max_value=100.0,step=0.1, value=float(_val("Attendance_%", 80.0)))
+            assignments = st.number_input("Assignments Completed (%)", min_value=0.0, max_value=100.0, step=0.1, value=float(_val("Assignments_Completed_%", 80.0)))
         with c3:
-            internal_score = st.number_input("Avg Internal Score", min_value=0.0, max_value=100.0, step=0.1, value=float(_val("Avg_Internal_Score", 35.0)))
-            stress         = st.number_input("Stress Level (1–10)", min_value=1, max_value=10, value=int(_val("Stress_Level_(1-10)", 5)))
-            social_media   = st.number_input("Social Media Hours / Day", min_value=0.0, max_value=12.0, step=0.1, value=float(_val("Social_Media_Hours", 2.0)))
+            internal    = st.number_input("Avg Internal Score", min_value=0.0, max_value=100.0,step=0.1, value=float(_val("Avg_Internal_Score", 35.0)))
+            stress      = st.number_input("Stress Level (1–10)",min_value=1,   max_value=10,   value=int(_val("Stress_Level_(1-10)", 5)))
+            social      = st.number_input("Social Media Hours / Day", min_value=0.0, max_value=12.0, step=0.1, value=float(_val("Social_Media_Hours", 2.0)))
 
         actual_input = st.number_input(
             "Actual SGPA (optional — for comparison)",
@@ -145,142 +178,286 @@ with tab_predict:
         )
         submitted = st.form_submit_button("🔮 Predict SGPA", use_container_width=True, type="primary")
 
-    # ── Result ─────────────────────────────────────────────────────────────
     if submitted:
         inputs = {
-            "Age":                    age,
-            "Gender":                 gender,
-            "Study_Hours_per_Day":    study_hours,
-            "Sleep_Hours":            sleep_hours,
-            "Attendance_%":           attendance,
-            "Assignments_Completed_%": assignments,
-            "Avg_Internal_Score":     internal_score,
-            "Stress_Level_(1-10)":    stress,
-            "Social_Media_Hours":     social_media,
+            "Age": age, "Gender": gender,
+            "Study_Hours_per_Day": study_hours, "Sleep_Hours": sleep_hours,
+            "Attendance_%": attendance, "Assignments_Completed_%": assignments,
+            "Avg_Internal_Score": internal, "Stress_Level_(1-10)": stress,
+            "Social_Media_Hours": social,
         }
         predicted = run_predict(model, pipeline, inputs)
         band      = grade_band(predicted)
-        icon      = GRADE_COLOR[band]
 
         st.divider()
         r1, r2, r3 = st.columns(3)
         r1.metric("Predicted SGPA", f"{predicted:.2f} / 10")
-        r2.metric("Grade Band", f"{icon} {band}")
+        r2.metric("Grade Band", f"{GRADE_COLOR[band]} {band}")
         if actual_input > 0:
-            error = round(actual_input - predicted, 2)
-            r3.metric("Actual SGPA", f"{actual_input:.2f}", delta=f"{error:+.2f} error")
+            r3.metric("Actual SGPA", f"{actual_input:.2f}", delta=f"{round(actual_input - predicted, 2):+.2f} error")
 
-        # Save to session history
         sid = selected_id if selected_id != "— manual entry —" else f"Manual-{len(st.session_state.history)+1}"
         st.session_state.history.append({
             "student_id": sid,
             "predicted":  predicted,
             "actual":     actual_input if actual_input > 0 else None,
         })
-        st.success(f"Prediction saved to Comparison tab  ·  student: **{sid}**")
+        st.success(f"Saved to **My Predictions** tab · student: **{sid}**")
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # TAB 2 — DASHBOARD
 # ════════════════════════════════════════════════════════════════════════════
 with tab_dashboard:
-    st.subheader("Model Performance")
+    st.subheader("Model Performance (Test Set)")
 
-    # ── Metric cards ──────────────────────────────────────────────────────
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Test MAE",    f"{metrics['test_mae']:.4f}")
-    m2.metric("Test RMSE",   f"{metrics['test_rmse']:.4f}")
-    m3.metric("Test R²",     f"{metrics['test_r2']:.4f}")
-    m4.metric("Within ±5%",  f"{metrics['within_5pct']:.1f}%")
-
-    st.caption(f"Model: **{metrics['model']}**  ·  Test set size: **{metrics['n_test']}** students")
+    m1.metric("Test MAE",   f"{metrics['test_mae']:.4f}")
+    m2.metric("Test RMSE",  f"{metrics['test_rmse']:.4f}")
+    m3.metric("Test R²",    f"{metrics['test_r2']:.4f}")
+    m4.metric("Within ±5%", f"{metrics['within_5pct']:.1f}%")
+    st.caption(f"Model: **{metrics['model']}**  ·  Test set: **{metrics['n_test']}** students")
     st.divider()
 
-    # ── Feature importance ────────────────────────────────────────────────
+    # Feature importance
     st.subheader("Feature Importance")
     fi_df = (
         pd.DataFrame(list(fi.items()), columns=["Feature", "Importance"])
         .sort_values("Importance", ascending=True)
     )
     fi_df["Feature"] = fi_df["Feature"].map(lambda x: FRIENDLY.get(x, x))
-
     fig_fi = px.bar(
         fi_df, x="Importance", y="Feature", orientation="h",
-        color="Importance", color_continuous_scale="Blues",
+        color="Importance", color_continuous_scale=[[0, "#1e3a5f"], [1, C_ACCENT]],
         title="Feature Importance (RandomForest)",
-        labels={"Importance": "Importance Score"},
     )
-    fig_fi.update_layout(coloraxis_showscale=False, height=400)
+    fig_fi.update_layout(coloraxis_showscale=False, height=400,
+                         paper_bgcolor="#161b22", plot_bgcolor="#161b22",
+                         font_color="#e2e8f0")
     st.plotly_chart(fig_fi, use_container_width=True)
 
-    # ── SGPA distribution from dataset ────────────────────────────────────
     st.divider()
+
+    # SGPA distribution
     st.subheader("SGPA Distribution in Dataset")
-    fig_hist = px.histogram(
+    fig_dist = px.histogram(
         df.reset_index(), x="SGPA", nbins=30,
-        color_discrete_sequence=["#4F8BF9"],
-        title="Distribution of Actual SGPA (training data)",
+        color_discrete_sequence=[C_BLUE],
+        title="Distribution of Actual SGPA (all 1000 students)",
     )
-    fig_hist.update_layout(height=350)
-    st.plotly_chart(fig_hist, use_container_width=True)
+    fig_dist.update_layout(height=350, paper_bgcolor="#161b22",
+                           plot_bgcolor="#161b22", font_color="#e2e8f0")
+    st.plotly_chart(fig_dist, use_container_width=True)
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# TAB 3 — COMPARISON
+# TAB 3 — DATASET ANALYSIS  (predictions on all 1000 CSV students)
 # ════════════════════════════════════════════════════════════════════════════
-with tab_compare:
-    st.subheader("Predicted vs Actual — This Session")
+with tab_dataset:
+    st.subheader("Full Dataset — Predicted vs Actual SGPA")
+    st.caption(f"Model ran on all **{len(cdf)}** students in the dataset")
 
-    history = st.session_state.history
+    # ── Live metrics on full dataset ──────────────────────────────────────
+    mae_all   = cdf["abs_error"].mean()
+    rmse_all  = np.sqrt((cdf["error"]**2).mean())
+    ss_res    = ((cdf["actual"] - cdf["predicted"])**2).sum()
+    ss_tot    = ((cdf["actual"] - cdf["actual"].mean())**2).sum()
+    r2_all    = 1 - ss_res / ss_tot
+    within_all= (cdf["abs_error"] <= 0.5).mean() * 100
+    grade_acc = cdf["grade_match"].mean() * 100
+
+    d1, d2, d3, d4, d5 = st.columns(5)
+    d1.metric("Total Students", len(cdf))
+    d2.metric("MAE",            f"{mae_all:.4f}")
+    d3.metric("RMSE",           f"{rmse_all:.4f}")
+    d4.metric("R²",             f"{r2_all:.4f}")
+    d5.metric("Within ±0.5 SGPA", f"{within_all:.1f}%")
+    st.divider()
+
+    # ── Scatter: predicted vs actual ──────────────────────────────────────
+    st.subheader("Predicted vs Actual SGPA — All Students")
+    fig_scatter = px.scatter(
+        cdf, x="actual", y="predicted",
+        color="abs_error", color_continuous_scale=[[0, C_GREEN], [0.5, "#d69e2e"], [1, C_ERROR_CLR]],
+        hover_data=["student_id", "error", "actual_grade", "predicted_grade"],
+        labels={"actual": "Actual SGPA", "predicted": "Predicted SGPA", "abs_error": "Abs Error"},
+        title="Predicted vs Actual SGPA (1000 students)",
+        opacity=0.7,
+    )
+    fig_scatter.add_trace(go.Scatter(
+        x=[cdf["actual"].min(), cdf["actual"].max()],
+        y=[cdf["actual"].min(), cdf["actual"].max()],
+        mode="lines", line=dict(dash="dash", color=C_RED, width=2),
+        name="Perfect prediction",
+    ))
+    fig_scatter.update_layout(height=500, paper_bgcolor="#161b22",
+                              plot_bgcolor="#161b22", font_color="#e2e8f0")
+    st.plotly_chart(fig_scatter, use_container_width=True)
+
+    # ── Error distribution ────────────────────────────────────────────────
+    st.subheader("Prediction Error Distribution")
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        fig_err = px.histogram(
+            cdf, x="error", nbins=40,
+            color_discrete_sequence=[C_BLUE],
+            title="Error Distribution  (Actual − Predicted)",
+            labels={"error": "Error (SGPA)"},
+        )
+        fig_err.add_vline(x=0, line_dash="dash", line_color=C_RED, line_width=2)
+        fig_err.update_layout(height=350, paper_bgcolor="#161b22",
+                              plot_bgcolor="#161b22", font_color="#e2e8f0")
+        st.plotly_chart(fig_err, use_container_width=True)
+
+    with col_b:
+        # Abs error buckets — 5-colour scheme matching React
+        bins   = [0, 0.25, 0.5, 1.0, 1.5, 2.0, float("inf")]
+        labels = ["0–0.25", "0.25–0.5", "0.5–1.0", "1.0–1.5", "1.5–2.0", ">2.0"]
+        cdf["error_bucket"] = pd.cut(cdf["abs_error"], bins=bins, labels=labels)
+        bucket_counts = cdf["error_bucket"].value_counts().sort_index().reset_index()
+        bucket_counts.columns = ["Error Range", "Count"]
+        bucket_counts["color"] = BUCKET_COLORS[:len(bucket_counts)]
+
+        fig_bucket = px.bar(
+            bucket_counts, x="Error Range", y="Count",
+            color="Error Range",
+            color_discrete_sequence=BUCKET_COLORS,
+            title="Absolute Error Buckets",
+        )
+        fig_bucket.update_layout(showlegend=False, height=350,
+                                 paper_bgcolor="#161b22", plot_bgcolor="#161b22",
+                                 font_color="#e2e8f0")
+        st.plotly_chart(fig_bucket, use_container_width=True)
+
+    # ── Grade band accuracy ───────────────────────────────────────────────
+    st.divider()
+    st.subheader("Grade Band Analysis")
+    col_c, col_d = st.columns(2)
+
+    with col_c:
+        # Actual vs predicted grade distribution
+        actual_grades  = cdf["actual_grade"].value_counts().reset_index()
+        pred_grades    = cdf["predicted_grade"].value_counts().reset_index()
+        actual_grades.columns  = ["Grade", "Count"]
+        pred_grades.columns    = ["Grade", "Count"]
+        actual_grades["Type"]  = "Actual"
+        pred_grades["Type"]    = "Predicted"
+        grade_df = pd.concat([actual_grades, pred_grades])
+
+        fig_grade = px.bar(
+            grade_df, x="Grade", y="Count", color="Type", barmode="group",
+            category_orders={"Grade": ["A","B","C","D","F"]},
+            color_discrete_map={"Actual": GRADE_ACTUAL, "Predicted": GRADE_PREDICTED},
+            title=f"Grade Distribution — Actual vs Predicted  (Accuracy: {grade_acc:.1f}%)",
+        )
+        fig_grade.update_layout(height=380, paper_bgcolor="#161b22",
+                                plot_bgcolor="#161b22", font_color="#e2e8f0")
+        st.plotly_chart(fig_grade, use_container_width=True)
+
+    with col_d:
+        fig_match = px.scatter(
+            cdf, x="actual", y="predicted",
+            color="grade_match",
+            color_discrete_map={True: C_GREEN, False: C_ERROR_CLR},
+            hover_data=["student_id", "actual_grade", "predicted_grade"],
+            labels={"actual": "Actual SGPA", "predicted": "Predicted SGPA", "grade_match": "Grade Match"},
+            title="Grade Band Match / Mismatch",
+            opacity=0.65,
+        )
+        fig_match.add_trace(go.Scatter(
+            x=[cdf["actual"].min(), cdf["actual"].max()],
+            y=[cdf["actual"].min(), cdf["actual"].max()],
+            mode="lines", line=dict(dash="dash", color=C_RED, width=2),
+            name="Perfect prediction", showlegend=False,
+        ))
+        fig_match.update_layout(height=380, paper_bgcolor="#161b22",
+                                plot_bgcolor="#161b22", font_color="#e2e8f0")
+        st.plotly_chart(fig_match, use_container_width=True)
+
+    # ── Full comparison table ─────────────────────────────────────────────
+    st.divider()
+    st.subheader("Per-Student Comparison Table")
+
+    search = st.text_input("Search by student ID", placeholder="e.g. S0042")
+    sort_col = st.selectbox("Sort by", ["abs_error", "actual", "predicted", "student_id"], index=0)
+
+    table_df = cdf.copy()
+    if search:
+        table_df = table_df[table_df["student_id"].str.contains(search, case=False)]
+    table_df = table_df.sort_values(sort_col, ascending=(sort_col == "student_id"))
+
+    display = table_df.rename(columns={
+        "student_id":      "Student ID",
+        "actual":          "Actual SGPA",
+        "predicted":       "Predicted SGPA",
+        "error":           "Error",
+        "abs_error":       "Abs Error",
+        "actual_grade":    "Actual Grade",
+        "predicted_grade": "Predicted Grade",
+        "grade_match":     "Grade Match",
+    })[["Student ID","Actual SGPA","Predicted SGPA","Error","Abs Error","Actual Grade","Predicted Grade","Grade Match"]]
+
+    st.dataframe(display, use_container_width=True, hide_index=True, height=400)
+    st.caption(f"Showing {len(display)} of {len(cdf)} students")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 4 — MY PREDICTIONS  (session history)
+# ════════════════════════════════════════════════════════════════════════════
+with tab_session:
+    st.subheader("My Predictions — This Session")
+
+    history     = st.session_state.history
     has_actuals = any(h["actual"] is not None for h in history)
 
     if not history:
-        st.info("No predictions yet. Go to the **Predict** tab to get started.")
+        st.info("No predictions yet — go to **Predict** tab to get started.")
     else:
         hist_df = pd.DataFrame(history)
         hist_df["error"]     = hist_df.apply(lambda r: round(r["actual"] - r["predicted"], 2) if r["actual"] else None, axis=1)
         hist_df["abs_error"] = hist_df["error"].abs()
 
-        # ── Summary metrics ───────────────────────────────────────────────
         if has_actuals:
             valid = hist_df.dropna(subset=["actual"])
-            n = len(valid)
-            mae  = valid["abs_error"].mean()
-            rmse = np.sqrt((valid["error"]**2).mean())
-            within = (valid["abs_error"] <= 0.5).sum() / n * 100
+            n     = len(valid)
+            mae   = valid["abs_error"].mean()
+            rmse  = np.sqrt((valid["error"]**2).mean())
+            within= (valid["abs_error"] <= 0.5).sum() / n * 100
 
             s1, s2, s3, s4 = st.columns(4)
             s1.metric("Students Compared", n)
             s2.metric("Session MAE",  f"{mae:.3f}")
             s3.metric("Session RMSE", f"{rmse:.3f}")
-            s4.metric("Within ±0.5 SGPA", f"{within:.1f}%")
+            s4.metric("Within ±0.5",  f"{within:.1f}%")
             st.divider()
 
-            # ── Scatter: predicted vs actual ──────────────────────────────
-            fig_scatter = px.scatter(
+            fig_s = px.scatter(
                 valid, x="actual", y="predicted",
+                color="abs_error",
+                color_continuous_scale=[[0, C_GREEN], [0.5, "#d69e2e"], [1, C_ERROR_CLR]],
                 hover_data=["student_id", "error"],
-                color="abs_error", color_continuous_scale="RdYlGn_r",
-                title="Predicted vs Actual SGPA",
                 labels={"actual": "Actual SGPA", "predicted": "Predicted SGPA"},
+                title="Predicted vs Actual SGPA (session)",
             )
-            # Perfect prediction line
             mn, mx = valid[["actual","predicted"]].min().min(), valid[["actual","predicted"]].max().max()
-            fig_scatter.add_trace(go.Scatter(
-                x=[mn, mx], y=[mn, mx],
-                mode="lines", line=dict(dash="dash", color="grey"),
+            fig_s.add_trace(go.Scatter(
+                x=[mn,mx], y=[mn,mx],
+                mode="lines", line=dict(dash="dash", color=C_RED, width=2),
                 name="Perfect prediction",
             ))
-            st.plotly_chart(fig_scatter, use_container_width=True)
+            fig_s.update_layout(paper_bgcolor="#161b22", plot_bgcolor="#161b22",
+                                font_color="#e2e8f0")
+            st.plotly_chart(fig_s, use_container_width=True)
 
-        # ── Table ─────────────────────────────────────────────────────────
         st.subheader("All Predictions This Session")
-        display_df = hist_df.rename(columns={
-            "student_id": "Student", "predicted": "Predicted SGPA",
-            "actual": "Actual SGPA", "error": "Error", "abs_error": "Abs Error",
-        })
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
-
+        st.dataframe(
+            hist_df.rename(columns={
+                "student_id":"Student","predicted":"Predicted SGPA",
+                "actual":"Actual SGPA","error":"Error","abs_error":"Abs Error",
+            }),
+            use_container_width=True, hide_index=True,
+        )
         if st.button("🗑️ Clear session history"):
             st.session_state.history = []
             st.rerun()
