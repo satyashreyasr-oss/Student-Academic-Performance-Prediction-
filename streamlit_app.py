@@ -228,7 +228,7 @@ with tab_dashboard:
     fig_dist = px.histogram(
         df.reset_index(), x="SGPA", nbins=30,
         color_discrete_sequence=[C_BLUE],
-        title="Distribution of Actual SGPA (all 1000 students)",
+        title="Distribution of Actual SGPA (all 260 students)",
     )
     fig_dist.update_layout(height=350, paper_bgcolor="#161b22",
                            plot_bgcolor="#161b22", font_color="#e2e8f0")
@@ -266,7 +266,7 @@ with tab_dataset:
         color="abs_error", color_continuous_scale=[[0, C_GREEN], [0.5, "#d69e2e"], [1, C_ERROR_CLR]],
         hover_data=["student_id", "error", "actual_grade", "predicted_grade"],
         labels={"actual": "Actual SGPA", "predicted": "Predicted SGPA", "abs_error": "Abs Error"},
-        title="Predicted vs Actual SGPA (1000 students)",
+        title="Predicted vs Actual SGPA (260 students)",
         opacity=0.7,
     )
     fig_scatter.add_trace(go.Scatter(
