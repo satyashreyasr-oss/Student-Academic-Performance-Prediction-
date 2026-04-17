@@ -60,13 +60,20 @@ GRADE_PREDICTED = "#58a6ff"   # light blue – predicted
 
 
 # ── Loaders ───────────────────────────────────────────────────────────────────
+@st.cache_data(show_spinner=False)
+def load_metadata():
+    """Load only JSON files — fast, no ML dependencies."""
+    with open(ARTIFACT_DIR / "metrics.json")            as f: metrics = json.load(f)
+    with open(ARTIFACT_DIR / "feature_importance.json") as f: fi      = json.load(f)
+    return metrics, fi
+
+
 @st.cache_resource(show_spinner="Loading model…")
-def load_artifacts():
+def load_model():
+    """Heavy load — called only when Predict tab is used."""
     model    = joblib.load(ARTIFACT_DIR / "model.pkl")
     pipeline = joblib.load(ARTIFACT_DIR / "pipeline.pkl")
-    with open(ARTIFACT_DIR / "metrics.json")           as f: metrics = json.load(f)
-    with open(ARTIFACT_DIR / "feature_importance.json") as f: fi     = json.load(f)
-    return model, pipeline, metrics, fi
+    return model, pipeline
 
 
 @st.cache_data(show_spinner=False)
@@ -103,10 +110,10 @@ if "history" not in st.session_state:
     st.session_state.history = []
 
 
-# ── Load ──────────────────────────────────────────────────────────────────────
-model, pipeline, metrics, fi = load_artifacts()
-df   = load_csv()
-cdf  = load_comparison_df()
+# ── Load (fast — no model at startup) ────────────────────────────────────────
+metrics, fi = load_metadata()
+df          = load_csv()
+cdf         = load_comparison_df()
 
 # ── Header ────────────────────────────────────────────────────────────────────
 st.title("🎓 Student Performance Predictor")
@@ -164,6 +171,7 @@ with tab_predict:
         submitted = st.form_submit_button("🔮 Predict SGPA", use_container_width=True, type="primary")
 
     if submitted:
+        model, pipeline = load_model()
         inputs = {
             "Age": age, "Gender": gender,
             "Study_Hours_per_Day": study_hours, "Sleep_Hours": sleep_hours,
