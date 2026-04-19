@@ -1,5 +1,5 @@
 """
-Student Performance Predictor — Streamlit App
+CohortIQ — Streamlit App
 Deploy: https://share.streamlit.io
 """
 
@@ -15,7 +15,7 @@ import streamlit as st
 
 # ── Config ────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Student Performance Predictor",
+    page_title="CohortIQ",
     page_icon="🎓",
     layout="wide",
 )
@@ -116,7 +116,7 @@ df          = load_csv()
 cdf         = load_comparison_df()
 
 # ── Header ────────────────────────────────────────────────────────────────────
-st.title("🎓 Student Performance Predictor")
+st.title("🎓 CohortIQ")
 st.caption("Predict SGPA (0–10) from academic & lifestyle features · RandomForest model")
 st.divider()
 
